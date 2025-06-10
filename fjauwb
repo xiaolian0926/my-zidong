@@ -1,0 +1,386 @@
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
+import com.alibaba.fastjson2.JSONPath;
+import com.alibaba.fastjson2.JSONArray;
+import me.hd.wauxv.plugin.api.callback.PluginCallBack.HttpCallback;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+
+// Wa_Weather_JP.java - Version 1.3 (2025-05-11, 优化输出格式，移除预报)
+String CAIYUN_TOKEN = "9sLrsS9ysdBTJeZo";
+String GAODE_API_KEY = "5c35ebf2e98a082684b0970e04ab06ad";
+
+// 自定义浮点数格式化，保留 1 位小数
+String formatFloat(float value) {
+    try {
+        int rounded = Math.round(value * 10);
+        int integerPart = rounded / 10;
+        int decimalPart = Math.abs(rounded % 10);
+        return integerPart + "." + decimalPart;
+    } catch (Exception e) {
+        log("格式化浮点数失败：value=" + value + ", error=" + e.toString());
+        return String.valueOf(value);
+    }
+}
+
+// 处理消息（支持个人和群聊）
+void onHandleMsg(Object msgInfo) {
+    log("收到消息: " + msgInfo.toString());
+    long createTime = msgInfo.getCreateTime();
+    long currentTime = System.currentTimeMillis();
+    if (currentTime - createTime >= 60 * 1000) {
+        log("消息已过期，createTime=" + createTime + ", currentTime=" + currentTime);
+        return;
+    }
+
+    if (msgInfo.isText()) {
+        String content = msgInfo.getContent().trim();
+        String talker = msgInfo.getTalker();
+        boolean isRoomMsg = talker.endsWith("@chatroom");
+
+        log("处理消息: content=" + content + ", talker=" + talker + ", isRoomMsg=" + isRoomMsg);
+
+        if (isRoomMsg && talker.equals("48731101954@chatroom")) {
+            log("忽略特定群聊消息: talker=" + talker);
+            return;
+        }
+
+        if (content.endsWith("天气")) {
+            String city = content.substring(0, content.length() - 2).trim();
+            if (city.isEmpty()) {
+                sendText(talker, "请输入有效的城市名，例如：广州天气");
+                log("城市名为空: content=" + content);
+                return;
+            }
+            log("开始获取天气: city=" + city);
+            getCityWeather(talker, city);
+        }
+    }
+}
+
+// 获取城市天气
+void getCityWeather(String talker, String city) {
+    String gaodeUrl = "https://restapi.amap.com/v3/geocode/geo?address=" + city + "&key=" + GAODE_API_KEY;
+    log("高德 API 请求: url=" + gaodeUrl);
+    get(gaodeUrl, null, new HttpCallback() {
+        public void onSuccess(int code, String content) {
+            log("高德 API 响应: code=" + code + ", content=" + content);
+            try {
+                JSONObject jsonObject = JSON.parseObject(content);
+                String status = safeGetJsonPath(jsonObject, "$.status", "0");
+                if (!"1".equals(status)) {
+                    sendText(talker, "无法找到城市：" + city);
+                    log("高德 API 失败：status=" + status + ", city=" + city);
+                    return;
+                }
+                String location = safeGetJsonPath(jsonObject, "$.geocodes[0].location", "");
+                if (location.isEmpty()) {
+                    sendText(talker, "无法获取城市位置：" + city);
+                    log("高德 API 位置为空：city=" + city);
+                    return;
+                }
+                String[] latLon = location.split(",");
+                String longitude = latLon[0];
+                String latitude = latLon[1];
+
+                String caiyunUrl = "https://api.caiyunapp.com/v2.5/" + CAIYUN_TOKEN + "/" + longitude + "," + latitude + "/weather?alert=true&dailysteps=3&hourlysteps=6";
+                log("彩云 API 请求: url=" + caiyunUrl);
+                get(caiyunUrl, null, new HttpCallback() {
+                    public void onSuccess(int code, String content) {
+                        log("彩云 API 响应: code=" + code + ", content=" + content);
+                        try {
+                            JSONObject jsonObject = JSON.parseObject(content);
+                            String status = safeGetJsonPath(jsonObject, "$.status", "");
+                            if (!"ok".equals(status)) {
+                                String errorMsg = safeGetJsonPath(jsonObject, "$.error", "未知错误");
+                                sendText(talker, "获取天气失败：" + errorMsg);
+                                log("彩云 API 失败：status=" + status + ", error=" + errorMsg);
+                                return;
+                            }
+
+                            // 提取实时天气数据
+                            String temperature = parseFloatJson(jsonObject, "$.result.realtime.temperature", "未知");
+                            String apparentTemp = parseFloatJson(jsonObject, "$.result.realtime.apparent_temperature", "未知");
+                            String skycon = safeGetJsonPath(jsonObject, "$.result.realtime.skycon", "未知");
+                            String humidity = parseHumidityJson(jsonObject, "$.result.realtime.humidity", "未知");
+                            String windSpeed = parseFloatJson(jsonObject, "$.result.realtime.wind.speed", "0");
+                            String windDirection = parseWindDirection(jsonObject, "$.result.realtime.wind.direction", "未知");
+                            String windLevel = getWindLevel(Float.parseFloat(windSpeed.equals("未知") ? "0" : windSpeed));
+                            String visibility = parseFloatJson(jsonObject, "$.result.realtime.visibility", "未知");
+                            String pressure = parsePressureJson(jsonObject, "$.result.realtime.pressure", "未知");
+                            String aqi = safeGetJsonPath(jsonObject, "$.result.realtime.air_quality.aqi.chn", "未知");
+                            String uvIndex = parseIntJson(jsonObject, "$.result.realtime.life_index.ultraviolet.index", "未知");
+                            String weatherDesc = translateSkycon(skycon);
+                            String emoji = getWeatherEmoji(skycon);
+                            String uvDesc = getUvDescription(uvIndex);
+
+                            // 检查关键字段
+                            if (temperature.equals("未知") || skycon.equals("未知") || humidity.equals("未知")) {
+                                sendText(talker, "获取天气失败：实时数据缺失");
+                                log("实时数据缺失：temp=" + temperature + ", skycon=" + skycon + ", humidity=" + humidity);
+                                return;
+                            }
+
+                            // 日出日落
+                            String sunrise = parseTimeJson(jsonObject, "$.result.daily.astro[0].sunrise.time", "未知");
+                            String sunset = parseTimeJson(jsonObject, "$.result.daily.astro[0].sunset.time", "未知");
+
+                            // 时间格式
+                            SimpleDateFormat dateFormat = new SimpleDateFormat("MM-dd EEEE HH:mm");
+                            String dateTime = dateFormat.format(new Date()).replace("星期", "周");
+
+                            // 构建输出
+                            StringBuilder response = new StringBuilder();
+                            response.append("🌤 ").append(city).append("天气\n");
+                            response.append("———————————————\n");
+                            response.append("⏰ 日期┃").append(dateTime).append("\n");
+                            response.append("☁️ 天气┃").append(weatherDesc).append(emoji).append("\n");
+                            response.append("🌡 温度┃").append(temperature).append("℃ (体感 ").append(apparentTemp).append("℃)\n");
+                            response.append("💧 湿度┃").append(humidity).append("%\n");
+                            response.append("💨 风向┃").append(windDirection).append(" ").append(windLevel).append(" (").append(windSpeed).append("km/h)\n");
+                            response.append("🤍 能见度┃").append(visibility).append("km\n");
+                            response.append("💛 气压┃").append(pressure).append("hPa\n");
+                            response.append("🧡 空气质量┃").append(getAqiDescription(aqi)).append(" (AQI ").append(aqi).append(")\n");
+                            response.append("———————————————\n");
+
+                            // 日况
+                            response.append("📅 日况\n");
+                            response.append("🌅 日出┃").append(sunrise).append("\n");
+                            response.append("🌇 日落┃").append(sunset).append("\n");
+                            response.append("☀️ 紫外线┃").append(uvDesc).append("\n");
+                            response.append("———————————————\n");
+
+                            // 生活建议
+                            response.append("💡 生活建议\n");
+                            response.append("👕 穿衣┃温度适宜，建议穿薄外套\n");
+                            response.append("💧 湿度┃湿度较高，注意通风\n");
+                            response.append("🌬️ 空气┃空气质量优，适合户外活动\n");
+
+                            sendText(talker, response.toString());
+                            log("天气信息发送成功: city=" + city);
+                        } catch (Exception e) {
+                            sendText(talker, "获取天气失败：数据解析错误");
+                            log("彩云 API 解析异常：error=" + e.toString());
+                        }
+                    }
+
+                    public void onError(Exception e) {
+                        sendText(talker, "获取天气失败：请稍后重试");
+                        log("彩云 API 请求异常：error=" + (e != null ? e.toString() : "未知异常"));
+                    }
+                });
+            } catch (Exception e) {
+                sendText(talker, "获取城市位置失败：数据解析错误");
+                log("高德 API 解析异常：error=" + e.toString());
+            }
+        }
+
+        public void onError(Exception e) {
+            sendText(talker, "获取城市位置失败：请稍后重试");
+            log("高德 API 请求异常：error=" + (e != null ? e.toString() : "未知异常"));
+        }
+    });
+}
+
+// 安全获取 JSONPath 值
+String safeGetJsonPath(JSONObject json, String path, String defaultValue) {
+    try {
+        Object result = JSONPath.eval(json, path);
+        return result != null ? result.toString() : defaultValue;
+    } catch (Exception e) {
+        log("JSONPath 解析失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 解析浮点数 JSON 值
+String parseFloatJson(JSONObject json, String path, String defaultValue) {
+    try {
+        Object value = JSONPath.eval(json, path);
+        if (value != null) {
+            return formatFloat(Float.parseFloat(value.toString()));
+        }
+        return defaultValue;
+    } catch (Exception e) {
+        log("解析浮点数失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 解析湿度 JSON 值
+String parseHumidityJson(JSONObject json, String path, String defaultValue) {
+    try {
+        Object value = JSONPath.eval(json, path);
+        if (value != null) {
+            return String.valueOf(Math.round(Float.parseFloat(value.toString()) * 100));
+        }
+        return defaultValue;
+    } catch (Exception e) {
+        log("解析湿度失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 解析气压 JSON 值
+String parsePressureJson(JSONObject json, String path, String defaultValue) {
+    try {
+        Object value = JSONPath.eval(json, path);
+        if (value != null) {
+            return String.valueOf(Math.round(Float.parseFloat(value.toString()) / 100));
+        }
+        return defaultValue;
+    } catch (Exception e) {
+        log("解析气压失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 解析整数 JSON 值
+String parseIntJson(JSONObject json, String path, String defaultValue) {
+    try {
+        Object value = JSONPath.eval(json, path);
+        if (value != null) {
+            return String.valueOf(Math.round(Float.parseFloat(value.toString())));
+        }
+        return defaultValue;
+    } catch (Exception e) {
+        log("解析整数失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 解析时间 JSON 值
+String parseTimeJson(JSONObject json, String path, String defaultValue) {
+    try {
+        Object value = JSONPath.eval(json, path);
+        if (value == null) {
+            return defaultValue;
+        }
+        String timeStr = value.toString();
+        if (timeStr.matches("\\d{2}:\\d{2}")) {
+            return timeStr;
+        } else if (timeStr.length() >= 16 && timeStr.contains("T")) {
+            return timeStr.substring(11, 16); // 提取 HH:mm
+        }
+        return defaultValue;
+    } catch (Exception e) {
+        log("解析时间失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 解析风向 JSON 值
+String parseWindDirection(JSONObject json, String path, String defaultValue) {
+    try {
+        Object value = JSONPath.eval(json, path);
+        if (value != null) {
+            return getWindDirection(Float.parseFloat(value.toString()));
+        }
+        return defaultValue;
+    } catch (Exception e) {
+        log("解析风向失败：path=" + path + ", error=" + e.toString());
+        return defaultValue;
+    }
+}
+
+// 转换彩云天气 skycon 为中文描述
+String translateSkycon(String skycon) {
+    if (skycon == null) return "未知";
+    switch (skycon) {
+        case "CLEAR_DAY": return "晴天";
+        case "CLEAR_NIGHT": return "晴夜";
+        case "PARTLY_CLOUDY_DAY": return "多云";
+        case "PARTLY_CLOUDY_NIGHT": return "多云";
+        case "CLOUDY": return "阴天";
+        case "RAIN": return "雨";
+        case "LIGHT_RAIN": return "小雨";
+        case "MODERATE_RAIN": return "中雨";
+        case "HEAVY_RAIN": return "大雨";
+        case "STORM_RAIN": return "暴雨";
+        case "SNOW": return "雪";
+        case "LIGHT_SNOW": return "小雪";
+        case "MODERATE_SNOW": return "中雪";
+        case "HEAVY_SNOW": return "大雪";
+        case "WIND": return "大风";
+        case "FOG": return "雾";
+        case "HAZE": return "霾";
+        default: return skycon;
+    }
+}
+
+// 获取天气对应的 Emoji
+String getWeatherEmoji(String skycon) {
+    if (skycon == null) return "";
+    switch (skycon) {
+        case "CLEAR_DAY": return "☀️";
+        case "CLEAR_NIGHT": return "🌙";
+        case "PARTLY_CLOUDY_DAY": return "⛅";
+        case "PARTLY_CLOUDY_NIGHT": return "🌥️";
+        case "CLOUDY": return "☁️";
+        case "RAIN": return "🌧️";
+        case "LIGHT_RAIN": return "🌦️";
+        case "MODERATE_RAIN": return "🌧️";
+        case "HEAVY_RAIN": return "⛈️";
+        case "STORM_RAIN": return "⛈️";
+        case "SNOW": return "❄️";
+        case "LIGHT_SNOW": return "🌨️";
+        case "MODERATE_SNOW": return "🌨️";
+        case "HEAVY_SNOW": return "🌨️";
+        case "WIND": return "💨";
+        case "FOG": return "🌫️";
+        case "HAZE": return "🌫 霾";
+        default: return "";
+    }
+}
+
+// 获取 AQI 描述
+String getAqiDescription(String aqiStr) {
+    try {
+        int aqi = Integer.parseInt(aqiStr);
+        if (aqi <= 50) return "优";
+        else if (aqi <= 100) return "良";
+        else if (aqi <= 150) return "轻度污染";
+        else if (aqi <= 200) return "中度污染";
+        else if (aqi <= 300) return "重度污染";
+        else return "严重污染";
+    } catch (Exception e) {
+        return "未知";
+    }
+}
+
+// 获取紫外线描述
+String getUvDescription(String uvIndexStr) {
+    try {
+        int uvIndex = Integer.parseInt(uvIndexStr);
+        if (uvIndex <= 2) return "低，无需特别防护";
+        else if (uvIndex <= 5) return "中等，建议涂防晒霜";
+        else if (uvIndex <= 7) return "高，需防晒霜和帽子";
+        else if (uvIndex <= 10) return "很强，避免长时间暴晒";
+        else return "极强，尽量减少户外活动";
+    } catch (Exception e) {
+        return "未知";
+    }
+}
+
+// 风向转换
+String getWindDirection(float direction) {
+    if (direction >= 337.5 || direction < 22.5) return "北风";
+    else if (direction < 67.5) return "东北风";
+    else if (direction < 112.5) return "东风";
+    else if (direction < 157.5) return "东南风";
+    else if (direction < 202.5) return "南风";
+    else if (direction < 247.5) return "西南风";
+    else if (direction < 292.5) return "西风";
+    else return "西北风";
+}
+
+// 风力等级
+String getWindLevel(float speed) {
+    if (speed < 1.6) return "0级";
+    else if (speed < 5.5) return "1级";
+    else if (speed < 11.3) return "2级";
+    else if (speed < 19.5) return "3级";
+    else if (speed < 28.5) return "4级";
+    else if (speed < 38.6) return "5级";
+    else return "6级以上";
+}
