@@ -1,0 +1,730 @@
+public boolean onLongClickSendBtn(String text) {
+	String group = getTargetTalker();
+	if (text.equals("/关闭点歌限制")) {
+		putInt(group, "开关", 1);
+		insertSystemMsg(group, "该聊天点歌限制已关闭", System.currentTimeMillis());
+		return true;
+	} else if (text.equals("/开启点歌限制")) {
+		putInt(group, "开关", 0);
+		insertSystemMsg(group, "该聊天点歌限制已开启", System.currentTimeMillis());
+		return true;
+	} else if (text.equals("/点歌限制开关")) {
+		ShowDialog("开关");
+	}
+	return false;
+}
+
+
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
+import com.alibaba.fastjson2.JSONArray;
+
+public void onHandleMsg(Object data) {
+	String text = data.content;
+	String qun = data.talker;
+	String wxid = data.sendTalker;
+	if (isFiltered(data)) return;
+	new Thread(new Runnable() {
+		public void run() {
+			if (text.startsWith("点歌")) {
+				String title = text.substring(2);
+				if (!title.isEmpty()) {
+					GetQQMusic(qun, title, data.msgId);
+				}
+			}
+			if (text.startsWith("QQ点歌")) {
+				String title = text.substring(4);
+				if (!title.isEmpty()) {
+					GetQQMusic(qun, title, data.msgId);
+				}
+			}
+			if (text.startsWith("网易点歌")) {
+				String title = text.substring(4);
+				if (!title.isEmpty()) {
+					GetNeteaseMusic(qun, title, data.msgId);
+				}
+			}
+			if (text.startsWith("酷狗点歌")) {
+				String title = text.substring(4);
+				if (!title.isEmpty()) {
+					GetKGMusic(qun, title, data.msgId);
+				}
+			}
+			if (text.startsWith("酷我点歌")) {
+				String title = text.substring(4);
+				if (!title.isEmpty()) {
+					SearchKWMusic(qun, title, data.msgId);
+				}
+			}
+			if (text.startsWith("抖音点歌")) {
+				String title = text.substring(4);
+				if (!title.isEmpty()) {
+					GetDYMusic(qun, title, data.msgId);
+				}
+			}
+			if (text.startsWith("咪咕点歌")) {
+				String title = text.substring(4);
+				if (!title.isEmpty()) {
+					GetMGMusic(qun, title, data.msgId);
+				}
+			}
+		}
+	}).start();
+}
+
+public void SearchKWMusic(String qun, String title, long msgId) {
+	try {
+		String result = get("https://bd.kuwo.cn/search/searchMusicBykeyWord?vipver=1&client=kt&ft=music&cluster=0&strategy=2012&encoding=utf8&rformat=json&mobi=1&issubtitle=1&show_copyright_off=1&pn=0&rn=1&all=" + title, null);
+		JSONObject jsonObject = JSON.parseObject(result);
+		JSONArray abslistArray = jsonObject.getJSONArray("abslist");
+		if (abslistArray == null || abslistArray.size() == 0) {
+			sendQuoteMsg(qun, msgId, "未搜到");
+			return;
+		}
+		JSONObject firstSong = abslistArray.getJSONObject(0);
+		String id = firstSong.getString("DC_TARGETID");
+		String name = firstSong.getString("SONGNAME");
+		String singer = firstSong.getString("ARTIST");
+		KWMusicUrl(qun, id, name, singer, msgId);
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "搜索时:" + e);
+	}
+
+}
+
+public static String b64Decrypt(String encodedStr) {
+	byte[] decodedBytes = Base64.getDecoder().decode(encodedStr);
+	String decryptedStr = new String(decodedBytes);
+	return decryptedStr;
+}
+
+public void KWMusicUrl(String qun, String id, String name, String singer, long msgId) {
+	try {
+		Map header = new HashMap();
+		header.put("Host", "nmobi.kuwo.cn");
+		header.put("Connection", "Keep-Alive");
+		header.put("Accept-Encoding", "identity");
+		header.put("User-Agent", "Apache-HttpClient/UNAVAILABLE (java 1.4)");
+		String result = get("http://nmobi.kuwo.cn/mobi.s?f=web&source=kwplayerhd_ar_4.3.0.8_tianbao_T1A_qirui.apk&type=convert_url_with_sign&rid=" + id, header);
+		JSONObject urlObject = JSON.parseObject(result);
+		JSONObject dataObject = urlObject.getJSONObject("data");
+		String url = dataObject.getString("url");
+		String pic = get("http://artistpicserver.kuwo.cn/pic.web?type=rid_pic&pictype=url&size=500&rid=" + id, null);
+		Map header2 = new HashMap();
+		header2.put("devid", "97cdfbe3f8d364df");
+		header2.put("host", "bd-api.kuwo.cn");
+		header2.put("user-agent", "Dart/2.19 (dart:io)");
+		header2.put("plat", "ar");
+		header2.put("channel", "xiaomi");
+		header2.put("ver", "4.1.3");
+		String songlyric = get("https://bd-api.kuwo.cn/api/service/mv/lyric?musicId=" + id + "&uid=-1&token=", header2);
+		JSONObject lyricObj = JSON.parseObject(songlyric);
+		JSONObject dataObj = lyricObj.getJSONObject("data");
+		String lyric = "";
+		if (dataObj.containsKey("content")) {
+			lyric = b64Decrypt(dataObj.getString("content"));
+		}
+		sendMusicMsg(qun, name, singer, url, lyric, pic);
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "解析时:" + e);
+	}
+
+}
+
+public boolean isFiltered(Object data) {
+	boolean switchFlag = getInt(data.talker, "开关", 0) == 1;
+	boolean commonCondition = isHalfMinute(data.createTime) || data.isSystem();
+	return switchFlag ? commonCondition : commonCondition || !data.isSend();
+}
+
+public boolean isHalfMinute(long createTime) {
+	long currentTime = System.currentTimeMillis();
+	long timeDifference = currentTime - createTime;
+	return timeDifference >= 30 * 1000;
+}
+import com.tencent.mm.opensdk.modelmsg.WXMediaMessage;
+import com.tencent.mm.opensdk.modelmsg.WXMusicObject;
+
+public static byte[] getImageBytes(String imageUrl) {
+	ByteArrayOutputStream baos = new ByteArrayOutputStream();
+	InputStream is = null;
+	try {
+		URL url = new URL(imageUrl);
+		HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+		connection.setRequestMethod("GET");
+		connection.setConnectTimeout(15000);
+		connection.setReadTimeout(15000);
+		connection.connect();
+		if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
+			is = connection.getInputStream();
+			byte[] byteChunk = new byte[4096];
+			int n;
+			while ((n = is.read(byteChunk)) > 0) {
+				baos.write(byteChunk, 0, n);
+			}
+		} else {}
+	} catch (IOException e) {
+
+	} finally {
+		if (is != null) {
+			try {
+				is.close();
+			} catch (IOException e) {}
+		}
+	}
+	return baos.toByteArray();
+}
+
+public void sendMusicMsg(String talker, String title, String singer, String url, String lyric, String pic) {
+	WXMusicObject music = new WXMusicObject();
+	//music.musicUrl = url;
+	music.musicDataUrl = url;
+	if (lyric == null || lyric.isEmpty()) {
+		lyric = "[99:99.99]暂无歌词";
+	}
+	music.songLyric = lyric;
+	music.songAlbumUrl = pic;
+
+	WXMediaMessage media = new WXMediaMessage(music);
+	media.title = title;
+	media.description = singer;
+	//media.thumbData = getImageBytes(pic);
+
+	sendMediaMsg(talker, media, "wx485a97c844086dc9");
+}
+
+public JSONObject CreateQQSearchRequest(String MusicName) {
+	JSONObject jsonRequest = new JSONObject();
+	JSONObject commObj = new JSONObject();
+	commObj.put("ct", "19");
+	commObj.put("cv", "1882");
+	commObj.put("uin", "3449496653");
+	jsonRequest.put("comm", commObj);
+	JSONObject searchObj = new JSONObject();
+	searchObj.put("method", "DoSearchForQQMusicDesktop");
+	searchObj.put("module", "music.search.SearchCgiService");
+	JSONObject paramObj = new JSONObject();
+	paramObj.put("grp", "1");
+	paramObj.put("num_per_page", "1");
+	paramObj.put("page_num", "1");
+	paramObj.put("query", MusicName);
+	paramObj.put("search_type", "0");
+	searchObj.put("param", paramObj);
+	jsonRequest.put("searchMusic", searchObj);
+	return jsonRequest;
+}
+
+public JSONObject CreateQQPpurlRequest(String id) {
+	JSONObject jsonRequest = new JSONObject();
+	JSONObject commObj = new JSONObject();
+	commObj.put("ct", "11");
+	commObj.put("cv", "22050022");
+	commObj.put("v", "22050022");
+	commObj.put("tmeAppID", "qqmusiclite");
+	commObj.put("partner_name", "xiaomi");
+	commObj.put("partner_appid", "2882303761517248199");
+	commObj.put("OpenUDID", "nouid");
+	commObj.put("udid", "udid");
+	commObj.put("uid", "3449496653");
+	jsonRequest.put("comm", commObj);
+	JSONObject requestObj = new JSONObject();
+	requestObj.put("module", "music.qqmusiclite.MtLimitFreeSvr");
+	requestObj.put("method", "Obtain");
+	JSONObject paramObj = new JSONObject();
+	JSONArray songIdArray = new JSONArray();
+	songIdArray.add(Integer.parseInt(id));
+	paramObj.put("songid", songIdArray);
+	paramObj.put("need_ppurl", true);
+	requestObj.put("param", paramObj);
+	jsonRequest.put("request", requestObj);
+	return jsonRequest;
+}
+
+public JSONObject CreateGetVkeyRequest(String filename, String songmid) {
+	JSONObject jsonRequest = new JSONObject();
+	JSONObject commObj = new JSONObject();
+	commObj.put("ct", "11");
+	commObj.put("cv", "22050022");
+	commObj.put("v", "22050022");
+	commObj.put("tmeAppID", "qqmusiclite");
+	commObj.put("partner_name", "xiaomi");
+	commObj.put("partner_appid", "2882303761517248199");
+	commObj.put("OpenUDID", "nouid");
+	commObj.put("udid", "udid");
+	commObj.put("uid", "3449496653");
+	jsonRequest.put("comm", commObj);
+	JSONObject requestObj = new JSONObject();
+	requestObj.put("module", "music.vkey.GetVkey");
+	requestObj.put("method", "UrlGetVkey");
+	JSONObject paramObj = new JSONObject();
+	paramObj.put("guid", "Yun");
+	JSONArray songmidArray = new JSONArray();
+	songmidArray.add(songmid);
+	paramObj.put("songmid", songmidArray);
+	JSONArray filenameArray = new JSONArray();
+	filenameArray.add("M500" + filename + ".mp3");
+	paramObj.put("filename", filenameArray);
+	requestObj.put("param", paramObj);
+	jsonRequest.put("request", requestObj);
+	return jsonRequest;
+}
+
+public JSONObject CreateQQVkeyRequest(String mid, String ppurl) {
+	JSONObject jsonRequest = new JSONObject();
+	JSONObject requestObj = new JSONObject();
+	requestObj.put("module", "music.vkey.GetVkey");
+	requestObj.put("method", "CgiGetTempVkey");
+	JSONObject paramObj = new JSONObject();
+	paramObj.put("guid", "Yun");
+	JSONArray songIdArray = new JSONArray();
+	JSONObject songlistObj = new JSONObject();
+	songlistObj.put("mediamid", "Yun");
+	songlistObj.put("tempVkey", ppurl);
+	songlistObj.put("songMID", mid);
+	songIdArray.add(songlistObj);
+	paramObj.put("songlist", songIdArray);
+	requestObj.put("param", paramObj);
+	jsonRequest.put("request", requestObj);
+	return jsonRequest;
+}
+
+public void GetQQMusic(String qun, String song, long msgId) {
+	try {
+		JSONObject searchRequest = CreateQQSearchRequest(song);
+		String searchResponse = get("http://u.y.qq.com/cgi-bin/musicu.fcg?data=" + searchRequest.toString(), null);
+		JSONObject searchResult = JSON.parseObject(searchResponse);
+		JSONObject songList = searchResult.getJSONObject("searchMusic").getJSONObject("data").getJSONObject("body").getJSONObject("song");
+		if (songList == null || songList.getJSONArray("list").size() == 0) {
+			sendQuoteMsg(qun, msgId, "未搜到");
+			return;
+		}
+		JSONObject musicDetail = songList.getJSONArray("list").getJSONObject(0);
+		String pmid = musicDetail.getJSONObject("album").getString("pmid");
+		String mediamid = musicDetail.getJSONObject("file").getString("media_mid");
+		String singer = musicDetail.getJSONArray("singer").getJSONObject(0).getString("name");
+		String name = musicDetail.getString("name");
+		String mid = musicDetail.getString("mid");
+		String id = musicDetail.getString("id");
+		JSONObject ppurlRequest = CreateQQPpurlRequest(id);
+		String ppurlResponse = post("http://u.y.qq.com/cgi-bin/musicu.fcg", ppurlRequest.toString(), null);
+		JSONObject ppurlResult = JSON.parseObject(ppurlResponse);
+		String ppurl = ppurlResult.getJSONObject("request").getJSONObject("data").getJSONArray("tracks").getJSONObject(0).getJSONObject("control").getString("ppurl");
+		String pic = "http://y.gtimg.cn/music/photo_new/T002R500x500M000" + pmid + ".jpg";
+		Map header = new HashMap();
+		header.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.105 Safari/537.36");
+		header.put("referer", "https://y.qq.com/");
+		String Getlyric = get("http://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?format=json&nobase64=1&songmid=" + mid, header);
+		JSONObject lyricObj = JSON.parseObject(Getlyric);
+		String lyric = "";
+		if (lyricObj.containsKey("lyric")) {
+			lyric = lyricObj.getString("lyric");
+		}
+		if (!ppurl.equals("")) {
+			JSONObject vkeyRequest = CreateQQVkeyRequest(mid, ppurl);
+			String vkeyResponse = post("http://u.y.qq.com/cgi-bin/musicu.fcg", vkeyRequest.toString(), null);
+			JSONObject vkeyResult = JSON.parseObject(vkeyResponse);
+			JSONObject YunObject = vkeyResult.getJSONObject("request").getJSONObject("data").getJSONObject("data").getJSONObject("Yun");
+			String url = YunObject.getString("purl");
+			sendMusicMsg(qun, name, singer, url, lyric, pic);
+		} else {
+			JSONObject GetVkeyObj = CreateGetVkeyRequest(mediamid, mid);
+			String UrlGetVkey = post("http://u.y.qq.com/cgi-bin/musicu.fcg", GetVkeyObj.toString(), null);
+			JSONObject UrlGetVkeyObj = JSON.parseObject(UrlGetVkey);
+			String url = UrlGetVkeyObj.getJSONObject("request").getJSONObject("data").getJSONArray("midurlinfo").getJSONObject(0).getString("flowurl");
+			if (!url.equals("")) {
+				sendMusicMsg(qun, name, singer, "http://sjy.stream.qqmusic.qq.com/" + url, lyric, pic);
+			} else {
+				sendQuoteMsg(qun, msgId, "获取失败,可能是数字专辑");
+			}
+		}
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "处理时:" + e);
+	}
+}
+
+public void GetDYMusic(String qun, String song, long msgId) {
+	try {
+		Map header = new HashMap();
+		header.put("Content-Type", "application/x-www-form-urlencoded");
+		header.put("cookie", "sid_guard=01f484ba93c634f20600947359dea700%7C1736116864%7C5184000%7CThu%2C+06-Mar-2025+22%3A41%3A04+GMT");
+		String jsonData = post("https://search5-search-hl.amemv.com/aweme/v1/music/search/?iid=3455126039454915&device_id=2755837670459812&channel=xiaomi_1128_64&aid=1128&app_name=aweme&version_code=310000&version_name=31.0.0&device_platform=android&os=android&device_type=22081212C&os_api=34&os_version=14", "cursor=0&enter_from=homepage_hot&source=music&query_correct_type=1&mode=light&keyword=" + song, header);
+		JSONObject json = JSON.parseObject(jsonData);
+		JSONArray musiclist = json.getJSONArray("music");
+		if (musiclist == null || musiclist.size() == 0) {
+			sendQuoteMsg(qun, msgId, "未搜到");
+			return;
+		}
+		JSONObject jsonObject = musiclist.getJSONObject(0);
+		JSONObject large = jsonObject.getJSONObject("cover_large");
+		JSONArray listArray = large.getJSONArray("url_list");
+		String name = jsonObject.getString("title");
+		String singer = jsonObject.getString("author");
+		JSONObject track = jsonObject.getJSONObject("play_url");
+		String url = track.getString("uri");
+		String pic = "";
+		if (listArray != null && listArray.size() != 0) {
+			pic = listArray.getString(0);
+		}
+		String lyric = "";
+		if (jsonObject.containsKey("lyric_url")) {
+			String jsonString = get(jsonObject.getString("lyric_url"), null);
+			JSONArray jsonArray = JSON.parseArray(jsonString);
+			for (int i = 0; i < jsonArray.size(); i++) {
+				JSONObject jsonObject = jsonArray.getJSONObject(i);
+				String text = jsonObject.getString("text");
+				String timeIdStr = jsonObject.getString("timeId");
+				int seconds = Integer.parseInt(timeIdStr.split("\\.")[0]);
+				String[] parts = timeIdStr.split("\\.");
+				int milliseconds = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+				while (parts[1].length() < 3) {
+					parts[1] += "0";
+				}
+				int minutes = seconds / 60;
+				int remainingSeconds = seconds % 60;
+				StringBuilder sb = new StringBuilder();
+				sb.append("[");
+				if (minutes < 10) {
+					sb.append("0");
+				}
+				sb.append(minutes);
+				sb.append(":");
+				if (remainingSeconds < 10) {
+					sb.append("0");
+				}
+				sb.append(remainingSeconds);
+				sb.append(".");
+				if (parts.length > 1 && !parts[1].isEmpty()) {
+					sb.append(parts[1].substring(0, Math.min(3, parts[1].length())));
+				}
+				sb.append("]");
+				String formattedTime = sb.toString();
+				lyric += formattedTime + text + "\n";
+			}
+		}
+		sendMusicMsg(qun, name, singer, url, lyric, pic);
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "处理时:" + e);
+	}
+}
+
+public void GetMGMusic(String qun, String song, long msgId) {
+	try {
+		Map header = new HashMap();
+		header.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36");
+		header.put("Referer", "https://m.music.migu.cn/v4/");
+		header.put("Host", "m.music.migu.cn");
+		header.put("channel", "014000D");
+		header.put("Cookie", "SESSION=ZTIwODkyMDQtOTE1NS00MDhlLThhMWEtMjQ0N2Y2Mzk2OTAz");
+		header.put("By", "3c0effb5be907dd7fc209a9001a18713");
+		String jsonData = get("https://m.music.migu.cn/migumusic/h5/search/all?text=" + song + "&pageSize=1", header);
+		JSONObject json = JSON.parseObject(jsonData);
+		Integer code = json.getInteger("code");
+		JSONObject data = json.getJSONObject("data");
+		JSONObject songsData = data.getJSONObject("songsData");
+		JSONArray resultList = songsData.getJSONArray("items");
+		if (resultList == null || resultList.size() == 0) {
+			sendQuoteMsg(qun, msgId, "未搜到");
+			return;
+		}
+		JSONObject jsonObject = resultList.getJSONObject(0);
+		String name = jsonObject.getString("name");
+		String id = jsonObject.getString("id");
+		JSONArray singerArray = jsonObject.getJSONArray("singers");
+		JSONObject firstSinger = singerArray.getJSONObject(0);
+		String singer = firstSinger.getString("name");
+		String albumId = jsonObject.getJSONObject("album").getString("id");
+		String jsonp = get("https://app.c.nf.migu.cn//MIGUM2.0/strategy/listen-url/v2.4?albumId=" + albumId + "&lowerQualityContentId=&netType=00&resourceType=2&songId=" + id + "&toneFlag=PQ", header);
+		JSONObject jsonObject = JSON.parseObject(jsonp);
+		JSONObject data = jsonObject.getJSONObject("data");
+		String url = data.getString("url");
+		String pic = data.getJSONObject("song").getString("img1");
+		String lyric = data.getString("lrcUrl");
+		if (!lyric.equals("")) {
+			lyric = get(lyric, null);
+		}
+		sendMusicMsg(qun, name, singer, url, lyric, pic);
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "处理时:" + e);
+	}
+}
+
+public void GetNeteaseMusic(String qun, String song, long msgId) {
+	try {
+		String jsonData = get("http://music.163.com//api/cloudsearch/pc/?type=1&limit=1&s=" + song, null);
+		JSONObject json = JSON.parseObject(jsonData);
+		JSONObject result = json.getJSONObject("result");
+		JSONArray songList = result.getJSONArray("songs");
+		if (songList == null || songList.size() == 0) {
+			sendQuoteMsg(qun, msgId, "未搜到");
+			return;
+		}
+		JSONObject musicDetail = songList.getJSONObject(0);
+		String singer = musicDetail.getJSONArray("ar").getJSONObject(0).getString("name");
+		String name = musicDetail.getString("name");
+		JSONObject al = musicDetail.getJSONObject("al");
+		String pic = al.getString("picUrl");
+		long id = musicDetail.get("id");
+		String songlyric = get("http://music.163.com/api/song/media?id=" + id, null);
+		JSONObject lyricObj = JSON.parseObject(songlyric);
+		String lyric = "";
+		if (lyricObj.containsKey("lyric")) {
+			lyric = lyricObj.getString("lyric");
+		}
+		String url = "https://api.qijieya.cn/meting/?server=netease&type=url&id=" + id;
+		sendMusicMsg(qun, name, singer, url, lyric, pic);
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "处理时:" + e);
+		return;
+	}
+}
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+public String md5(String input) {
+	try {
+		MessageDigest digest = MessageDigest.getInstance("MD5");
+		byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+		StringBuilder hexString = new StringBuilder();
+		for (byte b: hash) {
+			String hex = Integer.toHexString(0xff & b);
+			if (hex.length() == 1) hexString.append('0');
+			hexString.append(hex);
+		}
+		return hexString.toString();
+	} catch (NoSuchAlgorithmException e) {
+		return null;
+	}
+}
+
+public void GetKGMusic(String qun, String song, long msgId) {
+	try {
+		String jsonData = get("http://mobilecdn.kugou.com/api/v3/search/song?format=json&page=1&pagesize=1&keyword=" + song, null);
+		JSONObject json = JSON.parseObject(jsonData);
+		JSONObject result = json.getJSONObject("data");
+		JSONArray songList = result.getJSONArray("info");
+		if (songList == null || songList.size() == 0) {
+			sendQuoteMsg(qun, msgId, "未搜到");
+			return;
+		}
+		JSONObject musicDetail = songList.getJSONObject(0);
+		String singer = musicDetail.getString("singername");
+		String name = musicDetail.getString("songname");
+		JSONObject al = musicDetail.getJSONObject("trans_param");
+		String pic = al.getString("union_cover").replace("{size}", "240");
+		String id = musicDetail.getString("hash");
+		String audioid = musicDetail.getString("album_audio_id");
+		String albumid = musicDetail.getString("album_id");
+		Map header = new HashMap();
+		header.put("x-router", "trackercdn.kugou.com");
+		long createTime = System.currentTimeMillis() / 1000;
+		String keysignature = md5(id + "185672dd44712f60bb1736df5a377e823116" + "123456789" + "1592164784");
+		String md5 = md5("LnT6xpN3khm36zse0QzvmgTZ3waWdRSAalbum_audio_id=" + audioid + "album_id=" + albumid + "appid=3116area_code=1behavior=playclienttime=" + createTime + "clientver=11150cmd=26dfid=12345678" + "hash=" + id + "key=" + keysignature + "mid=123456789module_id=51mtype=0pid=411pidversion=3001ptype=0quality=128ssa_flag=is_fromtracktoken=a858ce7122c5e80b7485ec510bf320febcfb7d5be64703468f0da577ba88d53buserid=1592164784uuid=-vipType=0LnT6xpN3khm36zse0QzvmgTZ3waWdRSA");
+		String jsonp = get("https://gateway.kugou.com/v5/url?album_id=" + albumid + "&userid=1592164784&area_code=1&hash=" + id + "&appid=3116&ssa_flag=is_fromtrack&vipType=0&ptype=0&token=a858ce7122c5e80b7485ec510bf320febcfb7d5be64703468f0da577ba88d53b&mtype=0&quality=128&album_audio_id=" + audioid + "&behavior=play&pid=411&signature=" + md5 + "&module_id=51&clienttime=" + createTime + "&cmd=26&uuid=-&mid=123456789&dfid=12345678&clientver=11150&pidversion=3001&key=" + keysignature, header);
+		JSONObject jsonObj = JSON.parseObject(jsonp);
+		String lyric = get("http://m.kugou.com/app/i/krc.php?cmd=100&timelength=1&hash=" + id, null);
+		String url = jsonObj.getJSONArray("url").getString(0);
+		sendMusicMsg(qun, name, singer, url, lyric, pic);
+	} catch (Exception e) {
+		sendQuoteMsg(qun, msgId, "处理时:" + e);
+		return;
+	}
+}
+
+import okhttp3.MediaType;
+import okhttp3.RequestBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import java.time.Duration;
+
+private final OkHttpClient client = new OkHttpClient.Builder()
+	.connectTimeout(Duration.ofSeconds(30))
+	.callTimeout(Duration.ofSeconds(30))
+	.readTimeout(Duration.ofSeconds(30))
+	.build();
+
+private void addHeaders(Request.Builder builder, Map header) {
+	if (header != null) {
+		for (Map.Entry entry: header.entrySet()) {
+			builder.addHeader(entry.getKey(), entry.getValue());
+		}
+	}
+}
+
+private String executeRequest(Request.Builder builder) {
+	try {
+		Response response = client.newCall(builder.build()).execute();
+		return response.body().string();
+	} catch (IOException e) {
+		return null;
+	}
+}
+
+public String get(String url, Map header) {
+	Request.Builder builder = new Request.Builder().url(url).get();
+	addHeaders(builder, header);
+	return executeRequest(builder);
+}
+
+public String post(String url, String data, Map header) {
+	String mediaType = (header != null && header.containsKey("Content-Type")) ?
+		header.get("Content-Type").toString() : "application/json";
+	RequestBody body = RequestBody.create(MediaType.parse(mediaType), data);
+	Request.Builder builder = new Request.Builder().url(url).post(body);
+	addHeaders(builder, header);
+	return executeRequest(builder);
+}
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+
+import me.hd.wauxv.data.bean.GroupInfo;
+
+public void ShowDialog(String target) {
+	final Activity activity = getTopActivity();
+	if (activity == null) {
+		return;
+	}
+	activity.runOnUiThread(new Runnable() {
+		public void run() {
+			List roomIds = new ArrayList();
+			List names = new ArrayList();
+			for (GroupInfo groupInfo: getGroupList()) {
+				String qun = groupInfo.getRoomId();
+				roomIds.add(qun);
+				names.add(groupInfo.getName() + "(" + getGroupMemberCount(qun) + ")");
+			}
+			int GroupNumber = roomIds.size();
+			final String[] items = new String[GroupNumber];
+			final boolean[] boolArr = new boolean[GroupNumber];
+			for (int i = 0; i < GroupNumber; i++) {
+				items[i] = names.get(i);
+				if (getInt(roomIds.get(i), target, 0) == 1) {
+					boolArr[i] = true;
+				} else {
+					boolArr[i] = false;
+				}
+			}
+			AlertDialog.Builder builder = new AlertDialog.Builder(activity, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT);
+			builder.setTitle("解除限制群开关");
+			builder.setMultiChoiceItems(items, boolArr, new DialogInterface.OnMultiChoiceClickListener() {
+				public void onClick(DialogInterface dialog, int which, boolean isChecked) {
+					String qun = roomIds.get(which);
+					if (isChecked) {
+						putInt(qun, target, 1);
+					} else {
+						putInt(qun, target, 0);
+					}
+				}
+			});
+			builder.setNegativeButton("隐藏", new DialogInterface.OnClickListener() {
+				public void onClick(DialogInterface dialog, int which) {
+					dialog.dismiss();
+				}
+			});
+			builder.show();
+		}
+	});
+}
+
+
+private static final String JavaPath = pluginDir.replace("Plugin/", "");
+
+public void NewFile(String Path) {
+	File file = new File(Path);
+	if (!file.exists()) {
+		File parentDir = file.getParentFile();
+		if (parentDir != null && !parentDir.exists()) {
+			parentDir.mkdirs();
+		}
+		try {
+			file.createNewFile();
+		} catch (IOException e) {}
+	}
+}
+
+public String Read(String Path) {
+	String Text = "";
+	try {
+		File file = new File(Path);
+		if (!file.exists()) {
+			return null;
+		}
+		BufferedReader bf = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"));
+		String str;
+		while ((str = bf.readLine()) != null) {
+			Text += "\n" + str;
+		}
+		bf.close();
+		if (Text.isEmpty()) {
+			return null;
+		}
+		return Text.substring(1);
+	} catch (IOException ioe) {
+		return null;
+	}
+}
+
+
+public void Write(String Path, String WriteData) {
+	try {
+		File file = new File(Path);
+		if (!file.exists()) {
+			file.createNewFile();
+		}
+		FileOutputStream fos = new FileOutputStream(file);
+		OutputStreamWriter osw = new OutputStreamWriter(fos, "UTF-8");
+		osw.write(WriteData);
+		osw.flush();
+		osw.close();
+	} catch (IOException e) {}
+}
+
+public void putString(String setName, String itemName, String value) {
+	try {
+		String filePath = JavaPath + "/data/" + pluginId + "/" + setName;
+		NewFile(filePath);
+		String userData = Read(filePath);
+		JSONObject json = JSONObject.parseObject(userData == null ? "{}" : userData);
+		json.put(itemName, value);
+		Write(filePath, JSON.toJSONString(json));
+	} catch (Exception e) {}
+}
+
+public String getString(String setName, String itemName, String defaultValue) {
+	try {
+		String filePath = JavaPath + "/data/" + pluginId + "/" + setName;
+		String userData = Read(filePath);
+		if (userData == null) return defaultValue;
+		JSONObject userDataJson = JSONObject.parseObject(userData);
+		return userDataJson.getString(itemName) != null ? userDataJson.getString(itemName) : defaultValue;
+	} catch (Exception e) {
+		return defaultValue;
+	}
+}
+
+public void putInt(String setName, String itemName, int value) {
+	try {
+		String filePath = JavaPath + "/data/" + pluginId + "/" + setName;
+		NewFile(filePath);
+		String userData = Read(filePath);
+		JSONObject json = JSONObject.parseObject(userData == null ? "{}" : userData);
+		json.put(itemName, value);
+		Write(filePath, JSON.toJSONString(json));
+	} catch (Exception e) {}
+}
+
+public int getInt(String setName, String itemName, int defaultValue) {
+	try {
+		String filePath = JavaPath + "/data/" + pluginId + "/" + setName;
+		String userData = Read(filePath);
+		if (userData == null) return defaultValue;
+		JSONObject userDataJson = JSONObject.parseObject(userData);
+		return userDataJson.getInteger(itemName) != null ? userDataJson.getInteger(itemName) : defaultValue;
+	} catch (Exception e) {
+		return defaultValue;
+	}
+}
