@@ -1,0 +1,48 @@
+JSONObject taskBaseInfo = taskInfo.getJSONObject("taskBaseInfo"); // 获取任务基本信息
+                        String taskType = taskBaseInfo.getString("taskType"); // 获取任务类型
+                        String sceneCode = taskBaseInfo.getString("sceneCode"); // 获取场景代码
+                        String taskStatus = taskBaseInfo.getString("taskStatus"); // 获取任务状态
+
+                        JSONObject bizInfo = new JSONObject(taskBaseInfo.getString("bizInfo")); // 获取业务信息
+                        String taskTitle = bizInfo.optString("taskTitle", taskType); // 获取任务标题
+
+                        JSONObject taskRights = new JSONObject(taskInfo.getString("taskRights")); // 获取任务权益
+                        int awardCount = taskRights.optInt("awardCount", 0); // 获取奖励数量
+
+                        if (TaskStatus.FINISHED.name().equals(taskStatus)) {
+                            JSONObject joAward = new JSONObject(AntForestRpcCall.receiveTaskAward(sceneCode, taskType)); // 领取奖励请求
+                            if (ResUtil.checkSuccess(joAward)) {
+                                Log.forest("森林奖励🎖️[" + taskTitle + "]# " + awardCount + "活力值");
+                                SumawardCount = SumawardCount + awardCount;
+                                doubleCheck = true; // 标记需要重新检查任务
+                            } else {
+                                Log.error(TAG, "领取失败: " + taskTitle); // 记录领取失败信息
+                                Log.runtime(joAward.toString()); // 打印奖励响应
+                            }
+                        } else if (TaskStatus.TODO.name().equals(taskStatus)) {
+                            if (!taskList.contains(taskType)) {
+                                JSONObject joFinishTask = new JSONObject(AntForestRpcCall.finishTask(sceneCode, taskType)); // 完成任务请求
+                                if (ResUtil.checkSuccess(joFinishTask)) {
+                                    Log.forest("森林任务🧾️[" + taskTitle + "]");
+                                    doubleCheck = true; // 标记需要重新检查任务
+                                } else {
+                                    Log.error(TAG, "完成任务失败，" + taskTitle); // 记录完成任务失败信息
+                                    taskList.add(taskType);
+                                }
+                            }
+
+                        }
+                        GlobalThreadPools.sleep(500);
+                    }
+                }
+                if (!doubleCheck) break;
+                DataCache.INSTANCE.saveSet("forestTaskList", taskList);
+            }
+        } catch (JSONException e) {
+            Log.error(TAG, "JSON解析错误: " + e.getMessage());
+            Log.printStackTrace(TAG, e);
+        } catch (Throwable t) {
+            Log.error(TAG, "receiveTaskAward 错误:");
+            Log.printStackTrace(TAG, t); // 打印异常栈
+        }
+    }
